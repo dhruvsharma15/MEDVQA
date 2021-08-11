@@ -10,18 +10,19 @@ import torch
 import torch.nn as nn
 from torch.nn import AvgPool2d
 import torch.nn.functional as F
+from compact_bilinear_pooling import CompactBilinearPooling
 
-class MFB_CoAtt(nn.Module):
+class MCB_CoAtt(nn.Module):
     def __init__(self, embedding_size, LSTM_units, LSTM_layers, feat_size,
                  batch_size, ans_vocab_size, global_avg_pool_size, 
-                 dropout = 0.3, mfb_output_dim = 5000):
-        super(MFB_CoAtt, self).__init__()
+                 dropout = 0.3, MCB_output_dim = 5000):
+        super(MCB_CoAtt, self).__init__()
         self.batch_size = batch_size
         self.ans_vocab_size = ans_vocab_size
-        self.mfb_output_dim = mfb_output_dim
+        self.MCB_output_dim = MCB_output_dim
         self.feat_size = feat_size
-        self.mfb_out = 1000
-        self.mfb_factor = 5
+        self.MCB_out = 1000
+        self.MCB_factor = 5
         self.channel_size = global_avg_pool_size
         self.num_ques_glimpse = 2
         self.num_img_glimpse = 2
@@ -30,15 +31,17 @@ class MFB_CoAtt(nn.Module):
                             num_layers=LSTM_layers, batch_first=False)
         self.pool2d = AvgPool2d(global_avg_pool_size, stride=1)
         self.Dropout = nn.Dropout(p=dropout, )
-        self.Linear_img_proj = nn.Linear(self.feat_size, self.mfb_output_dim)
-        self.Linear_ques_proj = nn.Linear(LSTM_units, self.mfb_output_dim)
-        self.Linear_predict = nn.Linear(self.mfb_out, ans_vocab_size)
         self.Softmax = nn.Softmax()
+
+        self.mcb1 = CompactBilinearPooling(
+            self.feat_size*self.channel_size*self.channel_size, 
+            LSTM_units, 
+            self.MCB_output_dim*self.channel_size*self.channel_size
+        )
+        self.mcb2 = CompactBilinearPooling(self.feat_size*self.num_img_glimpse, LSTM_units*self.num_ques_glimpse, self.MCB_output_dim)
         
-        self.Linear1_q_proj = nn.Linear(LSTM_units*self.num_ques_glimpse, self.mfb_output_dim)
-        self.Linear2_q_proj = nn.Linear(LSTM_units*self.num_ques_glimpse, self.mfb_output_dim)
-        self.Linear_i_proj = nn.Linear(self.feat_size*self.num_img_glimpse, self.mfb_output_dim)
-        self.Conv_i_proj = nn.Conv2d(self.feat_size, self.mfb_output_dim, 1)
+        self.Linear1_q_proj = nn.Linear(LSTM_units*self.num_ques_glimpse, self.MCB_output_dim)
+        self.Conv_i_proj = nn.Conv2d(self.feat_size, self.MCB_output_dim, 1)
 
         self.Dropout_L = nn.Dropout(p=0.2)
         self.Dropout_M = nn.Dropout(p=0.2)
@@ -47,7 +50,7 @@ class MFB_CoAtt(nn.Module):
         self.Conv1_Iatt = nn.Conv2d(1000, 512, 1)
         self.Conv2_Iatt = nn.Conv2d(512, self.num_img_glimpse, 1)
 
-        self.Linear_predict = nn.Linear(self.mfb_out, self.ans_vocab_size)
+        self.Linear_predict = nn.Linear(self.MCB_out, self.ans_vocab_size)
         
         self.qatt_maps = None
         self.iatt_maps = None
@@ -87,25 +90,36 @@ class MFB_CoAtt(nn.Module):
         qatt_feature_concat = torch.cat(qatt_feature_list, 1)       # N x 2048 x 1 x 1
         
         '''
-        Image Attention with MFB
+        Image Attention with MCB
         '''
         q_feat_resh = torch.squeeze(qatt_feature_concat)                                # N x 2048
         i_feat_resh = torch.unsqueeze(img_feat_resh, 3)                                   # N x 2048 x w*w x 1
-        iatt_q_proj = self.Linear1_q_proj(q_feat_resh)                                  # N x 5000
-        iatt_q_resh = iatt_q_proj.view(iatt_q_proj.shape[0], self.mfb_output_dim, 1, 1)      # N x 5000 x 1 x 1
-        iatt_i_conv = self.Conv_i_proj(i_feat_resh)                                     # N x 5000 x w*w x 1
-        iatt_iq_eltwise = iatt_q_resh * iatt_i_conv
-        iatt_iq_droped = self.Dropout_M(iatt_iq_eltwise)                                # N x 5000 x w*w x 1
+
+        i_feat_mcb_input = i_feat_resh.reshape(img_feat_resh.shape[0], 
+                                                img_feat_resh.shape[1]*self.channel_size*self.channel_size
+                                            )      # N x 2048*w*w
+
+        iq_mcb_output = self.mcb1(i_feat_mcb_input, q_feat_resh)                        # N x 5000*w*w
+        iq_mcb_resh = iq_mcb_output.view(
+            iq_mcb_output.shape[0],
+            self.MCB_output_dim,
+            self.channel_size*self.channel_size,
+            1
+        )                                                                               # N x 5000 x w*w x 1        
+        
+        iatt_iq_droped = self.Dropout_M(iq_mcb_resh)                                # N x 5000 x w*w x 1
+        
         iatt_iq_permute1 = iatt_iq_droped.permute(0,2,1,3).contiguous()                              # N x w*w x 5000 x 1
         iatt_iq_resh = iatt_iq_permute1.view(iatt_iq_permute1.shape[0], self.channel_size*self.channel_size, 
-                                             self.mfb_out, self.mfb_factor)
+                                             self.MCB_out, self.MCB_factor)
         iatt_iq_sumpool = torch.sum(iatt_iq_resh, 3, keepdim=True)                      # N x w*w x 1000 x 1 
         iatt_iq_permute2 = iatt_iq_sumpool.permute(0,2,1,3).contiguous()                            # N x 1000 x w*w x 1
+
         iatt_iq_sqrt = torch.sqrt(F.relu(iatt_iq_permute2)) - torch.sqrt(F.relu(-iatt_iq_permute2))
         iatt_iq_sqrt = torch.squeeze(iatt_iq_sqrt)
         iatt_iq_sqrt = iatt_iq_sqrt.reshape(iatt_iq_sqrt.shape[0], -1)                           # N x 1000*w*w
         iatt_iq_l2 = F.normalize(iatt_iq_sqrt)
-        iatt_iq_l2 = iatt_iq_l2.view(iatt_iq_l2.shape[0], self.mfb_out, self.channel_size*self.channel_size, 1)  # N x 1000 x w*w x 1
+        iatt_iq_l2 = iatt_iq_l2.view(iatt_iq_l2.shape[0], self.MCB_out, self.channel_size*self.channel_size, 1)  # N x 1000 x w*w x 1
         
         ## 2 conv layers 1000 -> 512 -> 2
         iatt_conv1 = self.Conv1_Iatt(iatt_iq_l2)                    # N x 512 x w*w x 1
@@ -125,18 +139,16 @@ class MFB_CoAtt(nn.Module):
         iatt_feature_concat = torch.squeeze(iatt_feature_concat)    # N x 4096
         
         '''
-        Fine-grained Image-Question MFB fusion
+        Fine-grained Image-Question MCB fusion
         '''
-        mfb_q_proj = self.Linear2_q_proj(q_feat_resh)               # N x 5000
-        mfb_i_proj = self.Linear_i_proj(iatt_feature_concat)        # N x 5000
-        mfb_iq_eltwise = torch.mul(mfb_q_proj, mfb_i_proj)          # N x 5000
-        mfb_iq_drop = self.Dropout_M(mfb_iq_eltwise)
-        mfb_iq_resh = mfb_iq_drop.view(mfb_iq_drop.shape[0], 1, self.mfb_out, self.mfb_factor)   # N x 1 x 1000 x 5
-        mfb_iq_sumpool = torch.sum(mfb_iq_resh, 3, keepdim=True)    # N x 1 x 1000 x 1
-        mfb_out = torch.squeeze(mfb_iq_sumpool)                     # N x 1000
-        mfb_sign_sqrt = torch.sqrt(F.relu(mfb_out)) - torch.sqrt(F.relu(-mfb_out))
-        mfb_l2 = F.normalize(mfb_sign_sqrt)
-        prediction = self.Linear_predict(mfb_l2)
+        iq_feat = self.mcb2(iatt_feature_concat, q_feat_resh)          # N x 5000
+        MCB_iq_drop = self.Dropout_M(iq_feat)
+        MCB_iq_resh = MCB_iq_drop.view(MCB_iq_drop.shape[0], 1, self.MCB_out, self.MCB_factor)   # N x 1 x 1000 x 5
+        MCB_iq_sumpool = torch.sum(MCB_iq_resh, 3, keepdim=True)    # N x 1 x 1000 x 1
+        MCB_out = torch.squeeze(MCB_iq_sumpool)                     # N x 1000
+        MCB_sign_sqrt = torch.sqrt(F.relu(MCB_out)) - torch.sqrt(F.relu(-MCB_out))
+        MCB_l2 = F.normalize(MCB_sign_sqrt)
+        prediction = self.Linear_predict(MCB_l2)
         prediction = self.Softmax(prediction)
         
         return prediction
