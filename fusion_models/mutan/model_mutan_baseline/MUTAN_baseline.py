@@ -12,7 +12,7 @@ from torch.nn import AvgPool2d
 import torch.nn.functional as F
 
 class MutanFusion(nn.Module):
-    def __init__(self, input_dim=1024, out_dim=1024, num_layers=5):
+    def __init__(self, input_dim=1024, out_dim=5000, num_layers=5):
         super(MutanFusion, self).__init__()
         self.input_dim = input_dim
         self.out_dim = out_dim
