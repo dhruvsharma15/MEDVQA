@@ -121,7 +121,7 @@ class MFB_CoAtt(nn.Module):
             iatt_feature_list.append(t_iatt_mask)
         iatt_feature_concat = torch.mean(iatt_feature_list, 3)       # N x 2048 x w*w x 1
         iatt_feature_resh = iatt_feature_concat.view(iatt_iq_permute1.shape[0], self.channel_size, 
-                                                        self.channel_size, iatt_iq_permute1.shape[1])
+                                                        self.channel_size, iatt_iq_permute1.shape[1])           # N x w x w x 2048
         
         return iatt_feature_resh
 
