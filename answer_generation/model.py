@@ -6,17 +6,16 @@ import torch.nn.functional as F
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-class MFB_CoAtt(nn.Module):
+class Encoder(nn.Module):
     """
     Encoder.
     """
 
     def __init__(self, embedding_size, LSTM_units, LSTM_layers, feat_size,
-                 batch_size, ans_vocab_size, global_avg_pool_size, 
+                 batch_size, global_avg_pool_size, 
                  dropout = 0.3, mfb_output_dim = 5000):
-        super(MFB_CoAtt, self).__init__()
+        super(Encoder, self).__init__()
         self.batch_size = batch_size
-        self.ans_vocab_size = ans_vocab_size
         self.mfb_output_dim = mfb_output_dim
         self.feat_size = feat_size
         self.mfb_out = 1000
@@ -27,16 +26,10 @@ class MFB_CoAtt(nn.Module):
         
         self.LSTM = nn.LSTM(input_size=embedding_size, hidden_size=LSTM_units, 
                             num_layers=LSTM_layers, batch_first=False)
-        self.pool2d = AvgPool2d(global_avg_pool_size, stride=1)
         self.Dropout = nn.Dropout(p=dropout, )
-        self.Linear_img_proj = nn.Linear(self.feat_size, self.mfb_output_dim)
-        self.Linear_ques_proj = nn.Linear(LSTM_units, self.mfb_output_dim)
-        self.Linear_predict = nn.Linear(self.mfb_out, ans_vocab_size)
         self.Softmax = nn.Softmax()
         
         self.Linear1_q_proj = nn.Linear(LSTM_units*self.num_ques_glimpse, self.mfb_output_dim)
-        self.Linear2_q_proj = nn.Linear(LSTM_units*self.num_ques_glimpse, self.mfb_output_dim)
-        self.Linear_i_proj = nn.Linear(self.feat_size*self.num_img_glimpse, self.mfb_output_dim)
         self.Conv_i_proj = nn.Conv2d(self.feat_size, self.mfb_output_dim, 1)
 
         self.Dropout_L = nn.Dropout(p=0.2)
@@ -45,8 +38,6 @@ class MFB_CoAtt(nn.Module):
         self.Conv2_Qatt = nn.Conv2d(512, self.num_ques_glimpse, 1)
         self.Conv1_Iatt = nn.Conv2d(1000, 512, 1)
         self.Conv2_Iatt = nn.Conv2d(512, self.num_img_glimpse, 1)
-
-        self.Linear_predict = nn.Linear(self.mfb_out, self.ans_vocab_size)
         
         self.qatt_maps = None
         self.iatt_maps = None
